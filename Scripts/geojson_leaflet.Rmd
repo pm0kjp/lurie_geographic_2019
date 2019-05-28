@@ -1,0 +1,299 @@
+---
+title: "Lurie: GeoJSON and Leaflet"
+author: "Joy Payton"
+date: "3/18/2019"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(printr)
+options(scipen=999)
+```
+
+## Get A GeoJSON File
+
+Geospatial data can be expressed in maps, which can offer amazing levels of data density.
+
+You're probably familiar with JSON, which is frequently used to store and pass data between applications.  GeoJSON applies JSON structure to geospatial data in a single JSON file.  Let's get a map of Philly Census Tracts from the City of Philadelphia:
+
+```{r}
+library(rgdal)
+philadelphia_map <- readOGR('http://data.phl.opendata.arcgis.com/datasets/8bc0786524a4486bb3cf0f9862ad0fbf_0.geojson')
+```
+
+We can explore this object using the Environment pane in RStudio, or we can use commands like `str` (structure) or `head` (show first few rows) to look into this object.
+
+```{r}
+str(philadelphia_map, max.level = 2)
+```
+
+```{r}
+head(philadelphia_map@data)
+```
+
+
+The important takeaway:
+
+* `rgdal` will ingest geoJSON or Shapefile data and give you back a "Spatial Polygons Data Frame"
+* This object type can be thought of as having two main sections: a **data frame with tabular data** (`@data`), and four elements which together make up **the map** (`@polygons`, `@plotOrder`, `@bbox`, `@proj4string`).
+
+## Make the simplest map possible
+
+We're going to use [`leaflet`](https://rstudio.github.io/leaflet/) to create a dynamic map that users can interact with.  It's not going to be the prettiest!
+
+```{r}
+library(leaflet)
+
+leaflet(philadelphia_map) %>%
+  addPolygons() 
+```
+
+We can change default colors and add labels that come from the `@data` part of our map object.
+
+```{r}
+leaflet(philadelphia_map) %>%
+    addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = "white",
+    fillOpacity = 1,
+    label = philadelphia_map@data$NAMELSAD10
+  )
+```
+
+At this point, let's return to the [slide deck](https://docs.google.com/presentation/d/16zs-ZFtN0exDREp2qvUWa6lzZkMzjdEEeGpK0bKOVXw/edit#slide=id.g58e93accfd_0_526)!
+
+## Add Our Data!
+
+Currently all we have is a boring map of the Census Tracts in Philadelphia.  Let's add some data to enrich this map with our own patient or research information.  
+
+For the purposes of this exercise, we're going to use public data from the City of Philadelphia. See the [download page](https://www.opendataphilly.org/dataset/philadelphia-child-blood-lead-levels/resource/4d3572a3-77b5-4c34-aac6-9fa33b9a3a95) for more details.
+
+
+```{r}
+library(rgdal)
+child_blood_lead <- read.csv("https://phl.carto.com/api/v2/sql?q=SELECT+*+FROM+child_blood_lead_levels_by_ct&filename=child_blood_lead_levels_by_ct&format=csv&skipfields=cartodb_id,the_geom,the_geom_webmercator", stringsAsFactors = FALSE)
+```
+
+Let's peek at this data:
+
+```{r}
+head(child_blood_lead)
+```
+
+Understanding this data:
+
+* The Census Tract listed here includes the state (42), county (101), and tract number all in one geographic ID.  This is how you should ask for your tract data!  
+* Some data is suppressed for k-anonymity purposes.  If 1-5 children test at high blood lead levels, the precise number is suppressed.
+
+## Merging Tabular Data
+
+**WARNING**
+
+`merge` will reorder your rows, and that breaks the relationship between the rows of tabular data and the corresponding polygons.  Not what you want!  So we're going to keep track of the order thanks to the helpful "OBJECTID" variable, which is super helpful.  If you're working with data that doesn't have a column like this, just add it, so you can keep track of what the original order was.
+
+Merging in this case is pretty simple -- we just have to bring in the lead data and make sure our "hinge" (overlapping field) is set up properly:
+
+```{r}
+merged <-  merge(x = philadelphia_map@data,
+                 y = child_blood_lead,
+                 by.x = "GEOID10",
+                 by.y = "census_tract",
+                 all = TRUE)
+
+philadelphia_map@data <- merged[order(merged$OBJECTID),]
+```
+
+
+## Plot Color-Coded Data (Choropleth)
+
+Let's see what our lead levels look like:
+
+```{r}
+library(leaflet.extras)
+
+lead_palette <- colorBin("Blues", domain = philadelphia_map@data$perc_5plus, bins = 10, na.color = "#aaaaaa")
+
+leaflet(philadelphia_map) %>%
+  addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~lead_palette(philadelphia_map@data$perc_5plus),
+    fillOpacity = 1,
+    label = philadelphia_map@data$NAMELSAD10
+  ) %>%
+  suspendScroll()
+```
+
+At this point, let's return to the [slide deck](https://docs.google.com/presentation/d/16zs-ZFtN0exDREp2qvUWa6lzZkMzjdEEeGpK0bKOVXw/edit#slide=id.g58e93accfd_0_572)!
+
+## Enrich!
+
+And here we want to pull in our local file, which is a simplified version of data from the American Community Survey conducted by the Census Bureau.  Let's see what is contains.
+
+```{r}
+economic_data <- read.csv("../Data/philly_census.csv")
+head(economic_data)
+```
+
+This is selected economic characteristics of various census tracts.  Let's combine the data here with our map, and use labels to allow people to understand the data better:
+
+```{r}
+merged_again <- merge(x=philadelphia_map@data,
+                      y=economic_data,
+                      by.x = "GEOID10",
+                      by.y = "census_tract",
+                      all = TRUE)
+
+philadelphia_map@data <- merged_again[order(merged_again$OBJECTID),]
+
+
+head(philadelphia_map@data)
+```
+
+Ideally we'd love to be able to have a dual-purpose choropleth that shows both a color-coded blood lead level layer and a color-coded poverty level layer.  Let's do that, using the keyword "group" and some layer controls.
+
+Let's first create some useful labels that will show when polygons are activated by hover:
+
+```{r}
+labels <- sprintf(
+  "<strong>%s</strong><br/>
+  Families Below Poverty Line (%%): %g <br/>
+  Children With High Blood Lead Levels (%%): %g",
+  philadelphia_map@data$NAMELSAD10, 
+  philadelphia_map@data$pct_families_below_poverty_line,
+  philadelphia_map@data$perc_5plus
+) %>% lapply(htmltools::HTML)
+```
+
+And now let's map both poverty and lead data, using two `addPolygon` layers and some layer selection:
+
+```{r}
+poverty_palette <- colorBin("Reds", domain = philadelphia_map@data$pct_families_below_poverty_line, bins = 10, na.color = "#cccccc")
+
+leaflet(philadelphia_map) %>%
+  addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~lead_palette(philadelphia_map@data$perc_5plus),
+    fillOpacity = 0.5,
+    label = labels,
+    labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"),
+    group = "Lead Level"
+  ) %>%
+    addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~poverty_palette(philadelphia_map@data$pct_families_below_poverty_line),
+    fillOpacity = 1,
+    label = labels,
+    labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"),
+    group = "Poverty Level"
+  ) %>%
+  addLayersControl(
+    baseGroups = c("Lead Level", "Poverty Level"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  suspendScroll()
+```
+
+
+We could also add markers to indicate the most vulnerable areas -- where child high blood lead was measured at over 15% and the poverty rate is over 25%:
+
+```{r}
+library(dplyr)
+
+most_vulnerable <- philadelphia_map@data %>% 
+  mutate(lat = as.numeric(as.character(INTPTLAT10)), lng = as.numeric(as.character(INTPTLON10))) %>%
+  filter(pct_families_below_poverty_line > 25, perc_5plus > 15)
+
+leaflet(philadelphia_map) %>%
+  addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~lead_palette(philadelphia_map@data$perc_5plus),
+    fillOpacity = 0.5,
+    label = labels,
+    labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"),
+    group = "Lead Level"
+  ) %>%
+    addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~poverty_palette(philadelphia_map@data$pct_families_below_poverty_line),
+    fillOpacity = 1,
+    label = labels,
+    labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"),
+    group = "Poverty Level"
+  ) %>%
+  addMarkers(lat=most_vulnerable$lat, lng=most_vulnerable$lng) %>%
+  addLayersControl(
+    baseGroups = c("Lead Level", "Poverty Level"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  suspendScroll()
+```
+
+
+
+Want to save this and pass this javascript-powered map to your web developer to put on your website?
+
+```{r}
+library(htmlwidgets)
+my_map <- leaflet(philadelphia_map) %>%
+  addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~lead_palette(philadelphia_map@data$perc_5plus),
+    fillOpacity = 0.5,
+    label = labels,
+    labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"),
+    group = "Lead Level"
+  ) %>%
+    addPolygons(
+    weight = 1,  # border thickness
+    opacity = 0.5, # border opacity
+    color = "grey", # border color
+    fillColor = ~poverty_palette(philadelphia_map@data$pct_families_below_poverty_line),
+    fillOpacity = 1,
+    label = labels,
+    labelOptions = labelOptions(
+    style = list("font-weight" = "normal", padding = "3px 8px"),
+    textsize = "15px",
+    direction = "auto"),
+    group = "Poverty Level"
+  ) %>%
+  addMarkers(lat=most_vulnerable$lat, lng=most_vulnerable$lng) %>%
+  addLayersControl(
+    baseGroups = c("Lead Level", "Poverty Level"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  suspendScroll()
+saveWidget(my_map, file="../Media/my_map.html")
+```
