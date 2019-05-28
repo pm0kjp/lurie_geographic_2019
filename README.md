@@ -1,10 +1,6 @@
-# Mapping Geographic Data in R
+# Lurie Advancing Analytics for Children's Hospitals
 
---------
-
-__ODSC East 2019 Warm Up Webinar Participants:__
-
-You want to check out [the script for the webinar](Scripts/WebinarSneakPeek.Rmd) and [the rendered html (you'll want to download and open it)](Scripts/WebinarSneakPeek.html).
+You want to check out [the R Markdown script for the webinar](Scripts/geojson_leaflet.Rmd) and [the rendered html (you'll want to download and open it)](Scripts/geojson_leaflet.html).
 
 What are our goals?
 
@@ -12,10 +8,7 @@ What are our goals?
 * Be able to make dynamic maps using `leaflet`
 * Combine data to come up with useful visualizations
 
-
 --------
-
-Workshop materials for the "Mapping Geographic Data in R" workshop given by Joy Payton as part of ODSC East, held in Boston in spring 2019
 
 ## Scripts
 
