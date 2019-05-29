@@ -1,0 +1,193 @@
+---
+title: "Lurie: Shapefile and ggplot2"
+author: "Joy Payton"
+date: "3/18/2019"
+output: 
+  html_document: 
+    toc: yes
+    toc_float: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(printr)
+options(scipen=999)
+```
+
+## Get A Shapefile
+
+Geospatial data can be expressed in maps, which can offer amazing levels of data density.
+
+Shapefiles are actually groups of files.  You'll ordinarily find them as data sources from large organizations that can afford ESRI software licenses and use dedicated geographic information systems (GIS) for heavy-duty geographic data work.  Government agencies, for example, often use shapefiles.  You can read the standard for shapefiles at the [ESRI website](https://www.esri.com/library/whitepapers/pdfs/shapefile.pdf).
+
+Here, we're going to download a file from the [Chicago open data portal](https://data.cityofchicago.org) and unzip it to a directory with the name of the file.  
+
+```{r chicago-shapefile}
+download.file("https://data.cityofchicago.org/api/geospatial/5jrd-6zik?method=export&format=Shapefile", "../Data/chicago_census_tracts.zip")
+unzip("../Data/chicago_census_tracts.zip", exdir = "../Data/chicago_census_tracts")
+```
+
+```{r}
+library(rgdal)
+chicago_map <- readOGR(dsn = "../Data/chicago_census_tracts", verbose = FALSE)
+```
+
+We can explore this object using the Environment pane in RStudio, or we can use commands like `str` (structure) or `head` (show first few rows) to look into this object.
+
+```{r}
+str(chicago_map, max.level = 2)
+```
+
+```{r}
+head(chicago_map@data)
+```
+
+The important takeaway:
+
+* `rgdal` will ingest geoJSON or Shapefile data and give you back a "Spatial Polygons Data Frame"
+* This object type can be thought of as having two main sections: a **data frame with tabular data** (`@data`), and four elements which together make up **the map** (`@polygons`, `@plotOrder`, `@bbox`, `@proj4string`).
+
+## Make the simplest map possible
+
+We're going to use [`ggplot2`](https://ggplot2.tidyverse.org/reference/) to create a static map suitable of printing.  It's not going to be the prettiest!
+
+```{r}
+library(ggplot2)
+library(ggthemes)
+library(broom)
+chicago_fortified <- tidy(chicago_map, region = "geoid10")
+
+chicago_plain <- ggplot() + 
+  geom_polygon(data=chicago_fortified, 
+               aes(x=long, y=lat, group=group, fill=NA), 
+               color = "black", fill=NA, size=0.1) +
+  coord_map() + 
+  theme_void()
+print(chicago_plain)
+```
+
+These default colors aren't terrible... we'll leave them be for now.
+
+
+## Add Our Data!
+
+Currently all we have is a boring map of the Census Tracts in Chicago.  Let's add some data to enrich this map with our own patient or research information.  
+
+For the purposes of this exercise, we're going to use public data from the City of Chicago. See the [download page](https://data.cityofchicago.org/Public-Safety/Crimes-Map/dfnk-7re6) for more details.  These are crimes that have taken place in the past year, minus the last seven days.  We'll just look at homicides.
+
+
+```{r}
+chicago_crimes <- read.csv("https://data.cityofchicago.org/api/views/dfnk-7re6/rows.csv?accessType=DOWNLOAD", stringsAsFactors = FALSE)
+
+library(dplyr)
+chicago_homicides <- chicago_crimes %>% filter(PRIMARY.DESCRIPTION == "HOMICIDE")
+```
+
+Let's peek at this data:
+
+```{r}
+head(chicago_homicides)
+```
+
+Understanding this data:
+
+* Not every entry has a latitude and longitude.  We're going to limit ourselves just to the rows that do have lat/long data, however.
+
+```{r}
+chicago_homicides <- chicago_homicides %>% filter(!is.na(LATITUDE), !is.na(LONGITUDE))
+```
+
+## Mapping Points and Polygons
+
+We could visually overlay shootings on top of the census tracts, which at least helps us see which census tracts might be the most affected. This doesn’t help us calculate any statistics, but at least gives us an intuition about our data:
+
+```{r}
+chicago_enhanced <- ggplot() + 
+  geom_polygon(data=chicago_fortified, 
+               aes(x=long, y=lat, group=group, fill=NA), 
+               color = "black", fill=NA, size=0.1) +
+  geom_point(data=chicago_homicides, aes(x=LONGITUDE, y=LATITUDE, color="red", shape=".", alpha=0.5)) + 
+  coord_map() + 
+  theme_void()
+print(chicago_enhanced)
+```
+From this map, we see that some tracts have no homicides at all, and others have many. We need to remember that not every Census tract has homicide data, and we presume that means that there were 0 homicides, so we will need to add that in, if we want to show data for all Census tracts.
+
+## Mapping Point Data to Polygons
+
+Now what we’d like to do is get the shootings-per-tract data, which we can then combine with our research or clinical data to see if violence near home has any effect on our outcomes. To do this, we take the latitude and longitude of our shootings and transform them slightly so that they are understood as spatial coordinates, not just pairs of numbers. We’ll use the same map projection used in our original `chicago_map`.
+
+```{r}
+library(sp)
+coordinates <- SpatialPoints(chicago_homicides[c("LONGITUDE", "LATITUDE")])
+proj4string(coordinates) <- proj4string(chicago_map)
+```
+
+Let’s now apply what we know about our polygons (from `chicago_map`) and apply that to our points. We’ll end up with a table that has one row for each homicide coordinate. Essentially, what we’re doing is taking each point, lining it up with a matching polygon, and then getting the data about that polygon, which came along with the Shapefile we downloaded. 
+
+```{r}
+homicide_tracts <- over(coordinates, chicago_map)
+head(homicide_tracts)
+```
+We see the first few lines of the Census data for each of our homicides. For example, the first homicide in our data (at the time of writing this script) corresponds to Census tract 8430. We can use this to find out how many shootings take place in each Census tract.
+
+```{r}
+homicide_aggregated <- homicide_tracts %>%
+  group_by(geoid10) %>%
+  summarise(num_homicides = n()) %>%
+  ungroup() 
+head(homicide_aggregated)
+```
+Don’t forget that there are some Census tracts that aren’t represented at all in our  homicide data, so let’s make sure we enrich `homicide_aggregated` with all the tracts that aren’t included in the homicide data. We can get those by taking the data frame of our tract data, selecting the list of all the Census tracts in Chicago, and making sure that if they weren’t mentioned above, we add them, but with `num_homicides` equal to 0.
+
+```{r}
+non_shooting_tracts <- chicago_map@data %>% 
+                       select(geoid10) %>%
+                       filter(!geoid10 %in% homicide_aggregated$geoid10) %>%
+                       mutate(num_homicides = 0)
+head(non_shooting_tracts)
+```
+We can now combine the tracts-with-shootings and the tracts-with-no-shootings to get an overall picture of violence by census tract:
+
+```{r}
+homicide_aggregated <- rbind(homicide_aggregated, non_shooting_tracts)
+```
+
+## Merging Tabular Data
+
+**WARNING**
+
+`merge` will reorder your rows in a spatial polygon data frame, and that breaks the relationship between the rows of tabular data and the corresponding polygons. In our case, we're going to combine our homicide aggregate data with `chicago_fortified`, which is *not* a spatial polygon data frame, so we're safe.
+
+Merging in this case is pretty simple -- we just have to bring in the homicide data and make sure our "hinge" (overlapping field) is set up properly:
+
+```{r}
+chicago_fortified <-  merge(x = chicago_fortified,
+                 y = homicide_aggregated,
+                 by.x = "id",
+                 by.y = "geoid10",
+                 all = TRUE)
+```
+
+
+## Plot Color-Coded Data (Choropleth)
+
+Let's see what our homicide numbers look like:
+
+```{r}
+library(scales)
+chicago_homicide_map <- ggplot() +  
+  geom_polygon(data = chicago_fortified, aes(x=long, y=lat, group=group, fill=num_homicides),
+               color= "black", size = 0.1)  + 
+  coord_map() +
+  scale_fill_gradient(low = "white", high = "dark red", breaks=pretty_breaks(n=5))  +
+  theme_void() +
+  labs(title="Homicides in Chicago for the Past Year", fill="")
+chicago_homicide_map
+```
+
+## Save the Graphic
+
+```{r}
+ggsave("../Media/chicago_homicides.jpg", plot = chicago_homicide_map, device = "jpeg")
+```
