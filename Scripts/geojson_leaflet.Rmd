@@ -260,7 +260,7 @@ leaflet(philadelphia_map) %>%
 
 Want to save this and pass this javascript-powered map to your web developer to put on your website?
 
-```{r}
+```{r eval=FALSE}
 library(htmlwidgets)
 my_map <- leaflet(philadelphia_map) %>%
   addPolygons(
